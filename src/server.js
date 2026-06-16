@@ -1,95 +1,100 @@
 const path = require('path')
 const fs = require('fs')
+const express = require('express')
 const { Provider } = require('ltijs')
 
 const LTI_KEY    = process.env.LTI_KEY        || 'INCOTERM_LTI_SECRET_KEY_CHANGE_ME'
 const DB_URL     = process.env.DATABASE_URL    || 'mongodb://localhost:27017/lti-incoterm'
 const PORT       = parseInt(process.env.PORT)  || 3000
+const LTI_PORT   = PORT + 1  // ltijs runs on next port internally
 const CLIENT_ID  = process.env.LTI_CLIENT_ID  || ''
 const ISS        = process.env.LTI_ISS         || ''
 const AUTH_URL   = process.env.LTI_AUTH_URL    || ''
 const ACCESSTKN  = process.env.LTI_ACCESSTKN   || ''
 const KEYSET_URL = process.env.LTI_KEYSET_URL  || ''
+const PUBLIC_DIR = path.join(__dirname, '../public')
 
+// ── 1. Public Express server (main PORT — what Railway exposes) ──
+const app = express()
+app.use(express.json())
+app.use(express.static(PUBLIC_DIR))
+
+// Serve simulation to anyone
+app.get('/', (req, res) => {
+  res.sendFile(path.join(PUBLIC_DIR, 'index.html'))
+})
+
+// Health check
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok', service: 'Incoterms LTI Tool' })
+})
+
+// Proxy LTI routes to internal ltijs server
+const { createProxyMiddleware } = require('http-proxy-middleware')
+const ltiProxy = createProxyMiddleware({
+  target: `http://localhost:${LTI_PORT}`,
+  changeOrigin: true
+})
+app.use('/login', ltiProxy)
+app.use('/keys', ltiProxy)
+app.use('/lti', ltiProxy)
+
+app.listen(PORT, () => {
+  console.log(`🌐 Public server running on port ${PORT}`)
+})
+
+// ── 2. ltijs server (internal LTI_PORT) ──────────────────────
 Provider.setup(
   LTI_KEY,
   { url: DB_URL },
   {
-    appRoute: '/lti-launch',
+    appRoute: '/lti',
     loginRoute: '/login',
     keysetRoute: '/keys',
-    staticPath: path.join(__dirname, '../public'),
     cookies: { secure: true, sameSite: 'None' },
-    devMode: process.env.NODE_ENV !== 'production',
-    tokenMaxAge: false
+    devMode: process.env.NODE_ENV !== 'production'
   }
 )
 
-// ── Public routes (no LTI token needed) ──────────────────────
-// Health check
-Provider.app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'ok', service: 'Incoterms LTI Tool', version: '1.0.0' })
-})
-
-// Serve simulation directly — accessible by anyone including HBI reviewers
-Provider.app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, '../public/index.html'))
-})
-
-// ── LTI launch route (called by HBI's LMS) ───────────────────
 Provider.onConnect(async (token, req, res) => {
   const studentName  = token.userInfo?.name  || 'Student'
   const studentEmail = token.userInfo?.email || ''
-  const courseId     = token.platformContext?.context?.id || ''
-  const resourceId   = token.platformContext?.resource?.id || ''
-
   const injection = `<script>
     window.__LTI_USER__ = {
       name: ${JSON.stringify(studentName)},
       email: ${JSON.stringify(studentEmail)},
-      courseId: ${JSON.stringify(courseId)},
-      resourceId: ${JSON.stringify(resourceId)},
       ltijs: true
     };
   </script>`
-
-  let html = fs.readFileSync(path.join(__dirname, '../public/index.html'), 'utf8')
+  let html = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8')
   html = html.replace('</head>', injection + '</head>')
   return res.send(html)
 })
 
-// ── Grade submission ──────────────────────────────────────────
 Provider.app.post('/submit-grade', async (req, res) => {
   try {
-    const { score, maxScore, studentName } = req.body
+    const { score, maxScore } = req.body
     const idtoken = res.locals.token
     if (!idtoken) return res.status(401).json({ error: 'No LTI token.' })
-    const grade = {
+    await Provider.Grade.scorePublish(idtoken, {
       userId: idtoken.user,
       scoreGiven: parseFloat(score),
       scoreMaximum: parseFloat(maxScore) || 100,
       activityProgress: 'Completed',
       gradingProgress: 'FullyGraded',
       timestamp: new Date().toISOString()
-    }
-    await Provider.Grade.scorePublish(idtoken, grade)
+    })
     return res.json({ success: true })
   } catch (err) {
     return res.status(500).json({ error: err.message })
   }
 })
 
-// ── Platform registration ─────────────────────────────────────
 async function registerPlatform () {
-  if (!ISS || !CLIENT_ID) {
-    console.warn('⚠️  LTI_ISS or LTI_CLIENT_ID not set — skipping platform registration.')
-    return
-  }
+  if (!ISS || !CLIENT_ID) return
   try {
     await Provider.registerPlatform({
-      url: ISS,
-      name: 'HBI LMS',
-      clientId: CLIENT_ID,
+      url: ISS, name: 'HBI LMS', clientId: CLIENT_ID,
       authenticationEndpoint: AUTH_URL,
       accesstokenEndpoint: ACCESSTKN,
       authConfig: { method: 'JWK_SET', key: KEYSET_URL }
@@ -100,7 +105,7 @@ async function registerPlatform () {
   }
 }
 
-Provider.deploy({ port: PORT, silent: false }).then(async () => {
-  console.log(`🚀 Incoterms LTI Tool running on port ${PORT}`)
+Provider.deploy({ port: LTI_PORT, silent: false }).then(async () => {
+  console.log(`🔒 LTI server running on port ${LTI_PORT}`)
   await registerPlatform()
 })
