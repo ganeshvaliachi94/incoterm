@@ -6,30 +6,29 @@ const { Provider } = require('ltijs')
 const LTI_KEY    = process.env.LTI_KEY        || 'INCOTERM_LTI_SECRET_KEY_CHANGE_ME'
 const DB_URL     = process.env.DATABASE_URL    || 'mongodb://localhost:27017/lti-incoterm'
 const PORT       = parseInt(process.env.PORT)  || 3000
-const LTI_PORT   = PORT + 1  // ltijs runs on next port internally
+const LTI_PORT   = PORT + 1
 const CLIENT_ID  = process.env.LTI_CLIENT_ID  || ''
 const ISS        = process.env.LTI_ISS         || ''
 const AUTH_URL   = process.env.LTI_AUTH_URL    || ''
 const ACCESSTKN  = process.env.LTI_ACCESSTKN   || ''
 const KEYSET_URL = process.env.LTI_KEYSET_URL  || ''
-const PUBLIC_DIR = path.join(__dirname, '../public')
 
-// ── 1. Public Express server (main PORT — what Railway exposes) ──
+// index.html is in the repo ROOT (not in /public folder)
+const HTML_FILE = path.join(__dirname, '../index.html')
+
+// ── Public Express server ─────────────────────────────────────
 const app = express()
 app.use(express.json())
-app.use(express.static(PUBLIC_DIR))
 
-// Serve simulation to anyone
-app.get('/', (req, res) => {
-  res.sendFile(path.join(PUBLIC_DIR, 'index.html'))
-})
-
-// Health check
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', service: 'Incoterms LTI Tool' })
 })
 
-// Proxy LTI routes to internal ltijs server
+app.get('/', (req, res) => {
+  res.sendFile(HTML_FILE)
+})
+
+// Proxy LTI routes to internal ltijs
 const { createProxyMiddleware } = require('http-proxy-middleware')
 const ltiProxy = createProxyMiddleware({
   target: `http://localhost:${LTI_PORT}`,
@@ -43,7 +42,7 @@ app.listen(PORT, () => {
   console.log(`🌐 Public server running on port ${PORT}`)
 })
 
-// ── 2. ltijs server (internal LTI_PORT) ──────────────────────
+// ── ltijs internal server ─────────────────────────────────────
 Provider.setup(
   LTI_KEY,
   { url: DB_URL },
@@ -66,7 +65,7 @@ Provider.onConnect(async (token, req, res) => {
       ltijs: true
     };
   </script>`
-  let html = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8')
+  let html = fs.readFileSync(HTML_FILE, 'utf8')
   html = html.replace('</head>', injection + '</head>')
   return res.send(html)
 })
