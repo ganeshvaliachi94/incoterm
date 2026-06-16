@@ -1,4 +1,5 @@
 const path = require('path')
+const fs = require('fs')
 const { Provider } = require('ltijs')
 
 const LTI_KEY    = process.env.LTI_KEY        || 'INCOTERM_LTI_SECRET_KEY_CHANGE_ME'
@@ -14,26 +15,28 @@ Provider.setup(
   LTI_KEY,
   { url: DB_URL },
   {
-    appRoute: '/lti',
+    appRoute: '/lti-launch',
     loginRoute: '/login',
     keysetRoute: '/keys',
     staticPath: path.join(__dirname, '../public'),
     cookies: { secure: true, sameSite: 'None' },
-    devMode: process.env.NODE_ENV !== 'production'
+    devMode: process.env.NODE_ENV !== 'production',
+    tokenMaxAge: false
   }
 )
 
-// Health check — must respond BEFORE ltijs takes over
+// ── Public routes (no LTI token needed) ──────────────────────
+// Health check
 Provider.app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', service: 'Incoterms LTI Tool', version: '1.0.0' })
 })
 
-// Root route — serves the simulation directly (also accessible without LTI)
+// Serve simulation directly — accessible by anyone including HBI reviewers
 Provider.app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, '../public/index.html'))
 })
 
-// LTI launch route
+// ── LTI launch route (called by HBI's LMS) ───────────────────
 Provider.onConnect(async (token, req, res) => {
   const studentName  = token.userInfo?.name  || 'Student'
   const studentEmail = token.userInfo?.email || ''
@@ -50,14 +53,12 @@ Provider.onConnect(async (token, req, res) => {
     };
   </script>`
 
-  let html = require('fs').readFileSync(
-    path.join(__dirname, '../public/index.html'), 'utf8'
-  )
+  let html = fs.readFileSync(path.join(__dirname, '../public/index.html'), 'utf8')
   html = html.replace('</head>', injection + '</head>')
   return res.send(html)
 })
 
-// Grade submission
+// ── Grade submission ──────────────────────────────────────────
 Provider.app.post('/submit-grade', async (req, res) => {
   try {
     const { score, maxScore, studentName } = req.body
@@ -78,6 +79,7 @@ Provider.app.post('/submit-grade', async (req, res) => {
   }
 })
 
+// ── Platform registration ─────────────────────────────────────
 async function registerPlatform () {
   if (!ISS || !CLIENT_ID) {
     console.warn('⚠️  LTI_ISS or LTI_CLIENT_ID not set — skipping platform registration.')
