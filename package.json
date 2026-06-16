@@ -1,0 +1,24 @@
+{
+  "name": "incoterms-lti-tool",
+  "version": "1.0.0",
+  "description": "LTI v1.3 wrapper for the Incoterms Simulation — ICC Incoterms 2020",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "dependencies": {
+    "ltijs": "^5.9.3",
+    "express": "^4.18.2",
+    "mongoose": "^7.6.3",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "keywords": ["lti", "lti1.3", "incoterms", "elearning", "simulation"],
+  "license": "UNLICENSED"
+}
