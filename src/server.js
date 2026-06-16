@@ -1,22 +1,20 @@
 const path = require('path')
 const { Provider } = require('ltijs')
 
-// ─── Environment Variables ────────────────────────────────────────────────────
-const LTI_KEY    = process.env.LTI_KEY    || 'INCOTERM_LTI_SECRET_KEY_CHANGE_ME'
-const DB_URL     = process.env.DATABASE_URL || 'mongodb://localhost:27017/lti-incoterm'
-const PORT       = process.env.PORT        || 3000
-const CLIENT_ID  = process.env.LTI_CLIENT_ID  || ''   // filled by HBI/LMS admin
-const ISS        = process.env.LTI_ISS         || ''   // LMS Issuer URL from HBI
-const AUTH_URL   = process.env.LTI_AUTH_URL    || ''   // LMS OIDC Auth endpoint
-const ACCESSTKN  = process.env.LTI_ACCESSTKN   || ''   // LMS Access Token URL
-const KEYSET_URL = process.env.LTI_KEYSET_URL  || ''   // LMS Public Keyset URL
+const LTI_KEY    = process.env.LTI_KEY        || 'INCOTERM_LTI_SECRET_KEY_CHANGE_ME'
+const DB_URL     = process.env.DATABASE_URL    || 'mongodb://localhost:27017/lti-incoterm'
+const PORT       = parseInt(process.env.PORT)  || 3000
+const CLIENT_ID  = process.env.LTI_CLIENT_ID  || ''
+const ISS        = process.env.LTI_ISS         || ''
+const AUTH_URL   = process.env.LTI_AUTH_URL    || ''
+const ACCESSTKN  = process.env.LTI_ACCESSTKN   || ''
+const KEYSET_URL = process.env.LTI_KEYSET_URL  || ''
 
-// ─── Setup ltijs Provider ─────────────────────────────────────────────────────
 Provider.setup(
   LTI_KEY,
   { url: DB_URL },
   {
-    appRoute: '/',
+    appRoute: '/lti',
     loginRoute: '/login',
     keysetRoute: '/keys',
     staticPath: path.join(__dirname, '../public'),
@@ -25,50 +23,46 @@ Provider.setup(
   }
 )
 
-// ─── Main Launch Route ────────────────────────────────────────────────────────
-// Called after successful LTI launch from HBI's LMS
+// Health check — must respond BEFORE ltijs takes over
+Provider.app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok', service: 'Incoterms LTI Tool', version: '1.0.0' })
+})
+
+// Root route — serves the simulation directly (also accessible without LTI)
+Provider.app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, '../public/index.html'))
+})
+
+// LTI launch route
 Provider.onConnect(async (token, req, res) => {
-  // Attach student context to the session so the simulation can read it
   const studentName  = token.userInfo?.name  || 'Student'
   const studentEmail = token.userInfo?.email || ''
   const courseId     = token.platformContext?.context?.id || ''
   const resourceId   = token.platformContext?.resource?.id || ''
 
-  // Inject student info into the simulation page
-  // The HTML reads window.__LTI_USER__ on load if present
-  const injection = `
-    <script>
-      window.__LTI_USER__ = {
-        name:  ${JSON.stringify(studentName)},
-        email: ${JSON.stringify(studentEmail)},
-        courseId: ${JSON.stringify(courseId)},
-        resourceId: ${JSON.stringify(resourceId)},
-        ltijs: true
-      };
-    </script>
-  `
+  const injection = `<script>
+    window.__LTI_USER__ = {
+      name: ${JSON.stringify(studentName)},
+      email: ${JSON.stringify(studentEmail)},
+      courseId: ${JSON.stringify(courseId)},
+      resourceId: ${JSON.stringify(resourceId)},
+      ltijs: true
+    };
+  </script>`
 
   let html = require('fs').readFileSync(
     path.join(__dirname, '../public/index.html'), 'utf8'
   )
-  // Inject before </head>
   html = html.replace('</head>', injection + '</head>')
-
   return res.send(html)
 })
 
-// ─── Grade Submission Route ───────────────────────────────────────────────────
-// The simulation POSTs here when a student finishes
+// Grade submission
 Provider.app.post('/submit-grade', async (req, res) => {
   try {
     const { score, maxScore, studentName } = req.body
     const idtoken = res.locals.token
-
-    if (!idtoken) {
-      return res.status(401).json({ error: 'No LTI token found. Launch via LMS.' })
-    }
-
-    // Build the grade object for the LMS gradebook
+    if (!idtoken) return res.status(401).json({ error: 'No LTI token.' })
     const grade = {
       userId: idtoken.user,
       scoreGiven: parseFloat(score),
@@ -77,30 +71,16 @@ Provider.app.post('/submit-grade', async (req, res) => {
       gradingProgress: 'FullyGraded',
       timestamp: new Date().toISOString()
     }
-
-    // Send grade back to HBI's LMS via AGS (Assignment & Grade Services)
     await Provider.Grade.scorePublish(idtoken, grade)
-
-    console.log(`✅ Grade submitted: ${studentName} → ${score}/${maxScore}`)
-    return res.json({ success: true, message: 'Grade submitted to LMS.' })
-
+    return res.json({ success: true })
   } catch (err) {
-    console.error('Grade submission error:', err)
-    return res.status(500).json({ error: 'Failed to submit grade.', detail: err.message })
+    return res.status(500).json({ error: err.message })
   }
 })
 
-// ─── Health Check ─────────────────────────────────────────────────────────────
-Provider.app.get('/health', (req, res) => {
-  res.json({ status: 'ok', service: 'Incoterms LTI Tool', version: '1.0.0' })
-})
-
-// ─── Register Platform (HBI's LMS) ───────────────────────────────────────────
-// This runs once on startup to register HBI as a trusted platform
 async function registerPlatform () {
   if (!ISS || !CLIENT_ID) {
     console.warn('⚠️  LTI_ISS or LTI_CLIENT_ID not set — skipping platform registration.')
-    console.warn('   Set these env vars with values provided by HBI LMS admin.')
     return
   }
   try {
@@ -112,14 +92,13 @@ async function registerPlatform () {
       accesstokenEndpoint: ACCESSTKN,
       authConfig: { method: 'JWK_SET', key: KEYSET_URL }
     })
-    console.log('✅ HBI platform registered successfully.')
+    console.log('✅ HBI platform registered.')
   } catch (e) {
     console.error('Platform registration error:', e.message)
   }
 }
 
-// ─── Deploy ───────────────────────────────────────────────────────────────────
-Provider.deploy({ port: PORT }).then(async () => {
+Provider.deploy({ port: PORT, silent: false }).then(async () => {
   console.log(`🚀 Incoterms LTI Tool running on port ${PORT}`)
   await registerPlatform()
 })
